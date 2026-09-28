@@ -1,0 +1,33 @@
+[
+  {
+    "name": "Other Hall",
+    "hours": [],
+    "menus": []
+  },
+  {
+    "name": "phelps",
+    "hours": [
+      {
+        "name": "Lunch",
+        "start": "2026-08-16T12:00:00-04:00",
+        "end": "2026-08-16T13:00:00-04:00"
+      }
+    ],
+    "menus": [
+      {
+        "stationName": "Homestyle 2",
+        "foodAtStation": "<b>COMFORT CORNER</b><ul><li>[V] Roasted Zucchini &amp; Squash</li><li>[CG] Chicken Gravy<br><i>CONTAINS: WHEAT, MILK</i></li><li>ALL SANDWICH ITEMS MAY CONTAIN:<br>WHEAT, MILK</li><li>[V] Green Beans, [V] Corn</li><li>[G] Sauce A, [G] Sauce B<br><i>CONTAINS: EGG</i></li><li><i>CONTAINS: SESAME</i></li></ul>",
+        "start": "2026-08-16T11:30:00-04:00",
+        "end": "2026-08-16T13:00:00-04:00",
+        "attachments": []
+      },
+      {
+        "stationName": "ZONE 2",
+        "foodAtStation": "<ul><li>Roasted Zucchini &amp; Squash</li><li>[V] Roasted Zucchini &amp; Squash</li></ul>",
+        "start": "2026-08-16T11:30:00-04:00",
+        "end": "2026-08-16T13:00:00-04:00",
+        "attachments": []
+      }
+    ]
+  }
+]

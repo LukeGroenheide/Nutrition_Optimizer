@@ -1,0 +1,13 @@
+[Unit]
+Description=Nutrition Optimizer rolling FD menu-cache refresh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=nutrition-optimizer
+WorkingDirectory=/opt/nutrition-optimizer
+Environment=PYTHONPATH=/opt/nutrition-optimizer/src
+Environment=PATH=/opt/nutrition-optimizer/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+# This maintenance boundary has no BlueBubbles, OpenClaw, or target settings.
+ExecStart=/usr/bin/env python3 -m nutrition_optimizer.fdmealplanner.menu_cache refresh-menu-cache

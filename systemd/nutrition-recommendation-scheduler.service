@@ -1,0 +1,13 @@
+[Unit]
+Description=Nutrition Optimizer automatic meal recommendation scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nutrition-optimizer
+WorkingDirectory=/opt/nutrition-optimizer
+Environment=PYTHONPATH=/opt/nutrition-optimizer/src
+Environment=PATH=/opt/nutrition-optimizer/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+EnvironmentFile=/etc/nutrition-optimizer/runtime.env
+ExecStart=/usr/bin/env python3 -m nutrition_optimizer.messaging.recommendation_scheduler run-scheduler-once

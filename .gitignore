@@ -1,0 +1,50 @@
+# Python environments and generated files
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.envrc
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Runtime data and future local state
+data/raw/*
+!data/raw/.gitkeep
+data/state/
+*.db
+*.sqlite
+*.sqlite3
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+*.log
+*.pid
+*.sock
+*.bak
+*.backup
+*.tmp
+*.jsonl
+benchmarks/results/
+
+# Local Git metadata used only when the host provides a read-only .git mount
+.gitrepo/

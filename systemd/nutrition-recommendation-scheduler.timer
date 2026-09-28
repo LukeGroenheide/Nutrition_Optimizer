@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Nutrition Optimizer recommendation scheduler every five minutes
+
+[Timer]
+# Wake on stable wall-clock five-minute boundaries.  The application decides
+# Detroit-local due status; systemd must not convert meal times to UTC.
+OnCalendar=*-*-* *:00/5:00
+Persistent=true
+AccuracySec=1s
+Unit=nutrition-recommendation-scheduler.service
+
+[Install]
+WantedBy=timers.target

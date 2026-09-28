@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh Nutrition Optimizer's rolling FD menu cache twice daily
+
+[Timer]
+# Keep service cadence in Phelps/Nutrition application time.  The Dell host is
+# UTC, so never replace this with fixed UTC hours; systemd resolves Detroit DST.
+OnCalendar=*-*-* 06:30:00 America/Detroit
+OnCalendar=*-*-* 15:30:00 America/Detroit
+Persistent=true
+AccuracySec=1s
+Unit=nutrition-menu-refresh.service
+
+[Install]
+WantedBy=timers.target
