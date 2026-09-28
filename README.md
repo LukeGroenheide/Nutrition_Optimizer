@@ -29,15 +29,17 @@ flowchart TD
     I --> D
 ```
 
-The local catalog is the source for menu eligibility and official nutrition snapshots. The optimizer computes a meal from configured targets and authoritative intake, then persists the plan before delivery. For an incoming report, OpenClaw proposes a structured interpretation; Python checks it against the current meal context, known foods, and quantities before writing intake. **The LLM interprets; Python decides nutrition truth.** The OpenClaw model used in the personal deployment is GPT-5.6 Luna High; the deterministic boundaries do not depend on that model being a nutrition authority.
+The local catalog is the source for menu eligibility and official nutrition snapshots. The optimizer computes a meal from configured targets and authoritative intake, then persists the plan before delivery.
+
+For an incoming report, Nutrition_Optimizer prepares a bounded task, meal context, and response schema. OpenClaw invokes a configurable semantic model, which returns a structured interpretation; the deterministic boundaries do not depend on a particular model. Deterministic Python validates food identity, menu eligibility, and authoritative quantities before calculating nutrition and writing intake. Python owns targets, recommendation logic, and persisted application state. **The LLM interprets; Python decides what is valid and what gets recorded.** This lets users report meals conversationally while keeping nutrition calculations and state changes under explicit, testable rules.
 
 ## Key engineering decisions
 
-- **Fail-closed interpretation:** unsupported, ambiguous, or unaccounted-for report content prompts clarification instead of silently creating intake.
-- **Exact quantity versus presentation:** plans and nutrition use official servings and `Decimal` arithmetic. A visual portion phrase is presentation only unless it has a validated reversible mapping to an official quantity; descriptive-only phrases never become arithmetic inputs.
-- **Independent meal contexts:** durable plans and conversation drafts are scoped to a specific date, meal, and chat. A report cannot casually consume another meal's plan.
-- **Separate shake accounting:** confirmed shake intake appears in actual daily totals while remaining outside the meal recommendation target calculation.
-- **Durable delivery and reporting:** persisted plans, dispatch records, source message IDs, and report applications support retries without duplicate intake.
+- **Fail-closed interpretation:** unsupported or ambiguous meal reports trigger clarification instead of silently creating intake.
+- **Exact quantity versus presentation:** nutrition calculations use authoritative serving quantities, while visual portion descriptions help users judge portions and remain presentation-only unless they have a validated reversible mapping to those quantities.
+- **Independent meal contexts:** plans and report drafts are scoped to a specific date, meal, and chat so one meal's report cannot accidentally modify another.
+- **Separate shake accounting:** confirmed shakes count toward actual daily nutrition totals, but are excluded from meal recommendation calculations so drinking a shake does not shrink later meals and skipping one does not enlarge them.
+- **Durable delivery and reporting:** persisted plans, dispatch records, source message IDs, and report applications help prevent duplicate intake and preserve report state across retries.
 
 ## Example workflow
 
@@ -76,8 +78,4 @@ The files in `systemd/` are deployment examples using `/opt/nutrition-optimizer`
 
 ## Project status
 
-Completed V1 for one personal production deployment. The project demonstrates a working end-to-end design and tested authority boundaries; it is not a general nutrition service or healthcare-grade system.
-
-## Suggested GitHub visuals
-
-One or two **synthetic** examples would help a reader see the experience: (1) a recommendation showing exact and visual portions, and (2) a short meal-report exchange ending in confirmed daily totals. Capture them from disposable test data or recreate the message text; remove all real phone numbers, chat IDs, timestamps, and private conversation history.
+Completed V1 personal production project. Nutrition_Optimizer is deployed for one personal workflow and demonstrates a working end-to-end system with tested authority boundaries.
