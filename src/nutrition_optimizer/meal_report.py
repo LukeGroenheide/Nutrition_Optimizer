@@ -58,7 +58,7 @@ QuantitySource = Literal[
 
 @dataclass(frozen=True, slots=True)
 class PlannedMealItem:
-    """One exact current FD food and the authoritative planned quantity."""
+    """One catalog-linked food and its authoritative planned count or quantity."""
 
     food: ResolvedFood
     recommended_official_servings: Decimal
@@ -518,7 +518,26 @@ class MealReportReconciler:
                 skipped.append(SkippedMealItem(item, report.reference_text))  # type: ignore[union-attr]
                 continue
             quantity_relation = report.quantity_relation  # type: ignore[union-attr]
+            quantity_text = report.quantity_text  # type: ignore[union-attr]
+            if (
+                quantity_relation == "modified"
+                and _explicit_zero_quantity(quantity_text)
+                and _literal_phrase_in(quantity_text, user_text)
+                and (_names_item(plan, item, user_text)
+                     or quantity_reference_item_id == plan.item_id(item))
+            ):
+                skipped.append(SkippedMealItem(item, report.reference_text))  # type: ignore[union-attr]
+                continue
             if quantity_relation == "as_recommended":
+                counted = _grounded_personal_count_from_reference(
+                    plan, item, report.reference_text, user_text,
+                    quantity_reference_item_id,
+                )
+                if counted is not None:
+                    eaten.append(ProposedEatenMealItem(
+                        item, counted, "explicit_deterministic", report.reference_text, "high",
+                    ))
+                    continue
                 if not _authorized_plan_attestation(
                     plan, item, user_text,
                     unambiguous_reference=quantity_reference_item_id == plan.item_id(item),
@@ -636,11 +655,29 @@ class MealReportReconciler:
                 plan, item, quantity_text, user_text, quantity_reference_item_id,
             )
             if grounded_quantity is None:
+                grounded_quantity = _grounded_personal_count_after_whole_plan(
+                    plan, item, quantity_text, user_text,
+                )
+            if _reports_only_composite_component(item, user_text):
+                unspecified.append(item)
+                clarifications.append(ClarificationItem(
+                    "composite_component_unresolved",
+                    plan_item=item,
+                    original_user_phrase=report.reference_text,  # type: ignore[union-attr]
+                ))
+                continue
+            if grounded_quantity is None:
                 unspecified.append(item)
                 clarifications.append(ClarificationItem(
                     "reported_quantity_not_grounded",
                     plan_item=item,
                     original_user_phrase=_literal_reported_quantity(user_text, quantity_text),
+                ))
+                continue
+            counted = _explicit_planned_each_count(item, grounded_quantity)
+            if counted is not None:
+                eaten.append(ProposedEatenMealItem(
+                    item, counted, "explicit_deterministic", report.reference_text, "high",  # type: ignore[union-attr]
                 ))
                 continue
             portion = self._interpret_portion(item.food, grounded_quantity, planned_item=item)
@@ -678,13 +715,18 @@ class MealReportReconciler:
 
         unplanned, unplanned_clarifications = self._reconcile_unplanned(plan, semantic, user_text)
         clarifications.extend(unplanned_clarifications)
-        clarifications.extend(
-            ClarificationItem(
-                statement.reason,
-                original_user_phrase=statement.reference_text,
-            )
-            for statement in semantic.unresolved_statements
-        )
+        for statement in semantic.unresolved_statements:
+            matches = [item for item in plan.items if _names_item(plan, item, statement.reference_text)]
+            if len(matches) == 1 and _reports_only_composite_component(matches[0], statement.reference_text):
+                if not any(clarification.plan_item == matches[0] for clarification in clarifications):
+                    clarifications.append(ClarificationItem(
+                        "composite_component_unresolved", plan_item=matches[0],
+                        original_user_phrase=statement.reference_text,
+                    ))
+            else:
+                clarifications.append(ClarificationItem(
+                    statement.reason, original_user_phrase=statement.reference_text,
+                ))
         return ReconciledMealReport(
             plan,
             tuple(eaten),
@@ -714,6 +756,20 @@ class MealReportReconciler:
                 )
             except Exception:
                 resolved = None
+            composite_matches = [
+                item for item in plan.items
+                if _names_item(plan, item, report.food_text)
+                and _reports_only_composite_component(item, report.food_text)
+            ]
+            if len(composite_matches) == 1 and (
+                not isinstance(resolved, ResolvedFood)
+                or resolved.occurrence.occurrence_id == composite_matches[0].food.occurrence.occurrence_id
+            ):
+                clarifications.append(ClarificationItem(
+                    "composite_component_unresolved", plan_item=composite_matches[0],
+                    original_user_phrase=report.food_text,
+                ))
+                continue
             if not isinstance(resolved, ResolvedFood):
                 literal_food = _literal_unplanned_food_text(user_text, report.quantity_text)
                 unplanned.append(
@@ -1800,7 +1856,7 @@ _PHYSICAL_AMOUNT = re.compile(
     r"(?:(?:level|heaping|large|small|more|serving|quarter|tennis|golf)[ -]+)*"
     r"(?:scoop(?:ful)?s?|ladle(?:ful)?s?|spoons?|spoonfuls?|palms?(?:[ -]sized)?|handfuls?|"
     r"balls?(?:[ -]sized)?|pieces?|counts?|servings?|portions?|bowls?|cups?|"
-    r"ounces?|oz|grams?|sandwich(?:es)?|meatballs?|eggs?|cookies?)\b",
+    r"ounces?|oz|grams?|sandwich(?:es)?|meatballs?|eggs?|cookies?|biscuits?)\b",
     re.IGNORECASE,
 )
 _NON_FULL_AMOUNT = re.compile(
@@ -1831,6 +1887,76 @@ def _food_reference_tokens(value: str) -> set[str]:
     return tokens
 
 
+def _explicit_zero_quantity(value: str | None) -> bool:
+    if value is None:
+        return False
+    return re.fullmatch(
+        r"0(?:\.0+)?(?:\s*(?:oz|ounces?|grams?|g|servings?|each|count))?"
+        r"(?:\s+of\s+[a-z ]+)?|none",
+        value.casefold().strip(),
+    ) is not None
+
+
+def _explicit_planned_each_count(item: PlannedMealItem, phrase: str) -> Decimal | None:
+    """Use the source serving's exact each-count, including personal estimates."""
+
+    if item.record.provenance.provider != "personal_derived_estimate":
+        return None
+    serving = item.record.serving
+    if serving.quantity is None or serving.unit is None or serving.unit.casefold() not in {"each", "count"}:
+        return None
+    match = re.fullmatch(r"(\d+|one|two|three|four|five|six)\s+([a-z][a-z -]*)", phrase.casefold().strip())
+    if match is None:
+        return None
+    names = _food_reference_tokens(item.display_name) | _food_reference_tokens(item.record.name)
+    names |= {token + "s" for token in names}
+    food_words = _food_reference_tokens(match.group(2))
+    if not food_words or not food_words <= names:
+        return None
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+    count = words.get(match.group(1), int(match.group(1)) if match.group(1).isdigit() else 0)
+    return Decimal(count) / serving.quantity if count > 0 else None
+
+
+def _grounded_personal_count_from_reference(
+    plan: MealPlan, item: PlannedMealItem, reference: str, user_text: str,
+    quantity_reference_item_id: str | None,
+) -> Decimal | None:
+    """Honor a literal personal count even if the model called it planned."""
+
+    phrases = [match.group() for match in _PHYSICAL_AMOUNT.finditer(reference)
+               if _explicit_planned_each_count(item, match.group()) is not None]
+    if len(phrases) != 1:
+        return None
+    phrase = phrases[0]
+    grounded = _grounded_modified_quantity_text(
+        plan, item, phrase, user_text, quantity_reference_item_id,
+    ) or _grounded_personal_count_after_whole_plan(plan, item, phrase, user_text)
+    return _explicit_planned_each_count(item, grounded) if grounded is not None else None
+
+
+def _grounded_personal_count_after_whole_plan(
+    plan: MealPlan, item: PlannedMealItem, phrase: str, user_text: str,
+) -> str | None:
+    """Ground a biscuit exception in its own clause after an explicit full-plan claim."""
+
+    if _explicit_planned_each_count(item, phrase) is None:
+        return None
+    normalized = " ".join(user_text.casefold().split())
+    for separator in reversed(tuple(re.finditer(r"[.!?](?=\s)|\bbut\b", normalized))):
+        before = normalized[:separator.start()].strip()
+        if re.fullmatch(
+            r"(?:i (?:ate|had|consumed) )?"
+            r"(?:everything you recommended|all of it|what you recommended)",
+            before,
+        ) is None:
+            continue
+        local = normalized[separator.end():].strip()
+        if _grounded_modified_quantity_text(plan, item, phrase, local, None) is not None:
+            return phrase
+    return None
+
+
 def _names_item(plan: MealPlan, item: PlannedMealItem, text: str) -> bool:
     """Require a distinctive literal food token for item-scoped attestations."""
     tokens = _food_reference_tokens
@@ -1842,15 +1968,27 @@ def _names_item(plan: MealPlan, item: PlannedMealItem, text: str) -> bool:
     return bool((own - others) & tokens(text))
 
 
+def _reports_only_composite_component(item: PlannedMealItem, text: str) -> bool:
+    """A named component cannot inherit a composite item's nutrition."""
+
+    name = item.display_name.casefold()
+    if name != "biscuits and gravy" and item.record.name.casefold() != "biscuits and gravy":
+        return False
+    words = _food_reference_tokens(text)
+    return "biscuit" in words and "gravy" not in words or (
+        "biscuit" in words and bool(re.search(r"\b(?:no|not|without)\s+gravy\b", text, re.IGNORECASE))
+    )
+
+
 _PLAN_ATTESTATION = re.compile(
     r"\b(?:everything you recommended|what you recommended|"
     r"amounts? you (?:recommended|told me to)|"
-    r"recommended amounts? of|the (?:whole |full )?recommended (?:amount|portion)|"
-    r"(?:as|like) (?:you )?recommended|as planned|all)\b"
+    r"recommended amounts? of|(?:the )?(?:whole |full )?recommended (?:amount|portion)|"
+    r"(?:as|like) (?:you )?recommended|as planned|all|both)\b"
 )
 _WHOLE_MEAL_ATTESTATION = re.compile(
     r"\b(?:everything(?: you recommended)?|the whole meal(?: as (?:you )?recommended)?|"
-    r"all of it (?:but|except)|what you recommended)\b"
+    r"all of it(?: (?:but|except))?|the recommended amount|what you recommended)\b"
 )
 _SHARED_PREPOSED_ATTESTATION = re.compile(
     r"\b(?:recommended amounts? of|all of the recommended)\s+"
@@ -1859,7 +1997,7 @@ _SHARED_PREPOSED_ATTESTATION = re.compile(
 _PLAN_ATTESTATION_WORDS = frozenset({
     "as", "like", "recommended", "planned", "what", "amount", "amounts",
     "portion", "told", "me", "to", "whole", "full", "all", "everything",
-    "meal", "eat", "well",
+    "meal", "eat", "well", "both",
 })
 _MEAL_SCOPE_WORDS = frozenset({"breakfast", "lunch", "dinner", "brunch"})
 
@@ -1871,6 +2009,7 @@ def _authorized_plan_attestation(
 
     normalized = " ".join(text.casefold().split())
     own_tokens = _food_reference_tokens(item.display_name) | _food_reference_tokens(item.record.name)
+    own_tokens |= {token + "s" for token in own_tokens}
     other_tokens = set().union(*(
         _food_reference_tokens(other.display_name) | _food_reference_tokens(other.record.name)
         for other in plan.items if other != item
@@ -1880,15 +2019,17 @@ def _authorized_plan_attestation(
         _food_head_tokens(other) for other in plan.items if other != item
     ))
     whole = _WHOLE_MEAL_ATTESTATION.search(normalized)
-    whole_clause = None if whole is None else _quantity_clause(normalized, whole)[0]
+    whole_clause = None if whole is None else re.split(
+        r"\b(?:but|except)\b", _quantity_clause(normalized, whole)[0], maxsplit=1,
+    )[0]
     if whole is not None and (
         whole.group().startswith("all of it ")
         or re.match(r"\s+(?:but|except)\b", normalized[whole.end():]) is not None
         or not any(_names_item(plan, candidate, whole_clause) for candidate in plan.items)
     ):
         if (
-            _PHYSICAL_AMOUNT.search(normalized)
-            or _NON_FULL_AMOUNT.search(normalized)
+            _PHYSICAL_AMOUNT.search(whole_clause)
+            or _NON_FULL_AMOUNT.search(whole_clause)
             or _later_local_correction(plan, item, normalized, whole.end())
             or _unaccounted_report_clause(
                 normalized, whole.end(), own_tokens, other_tokens, before=whole.start(),
@@ -1925,6 +2066,13 @@ def _authorized_plan_attestation(
         ):
             return True
     for match in _PLAN_ATTESTATION.finditer(normalized):
+        if match.group() == "both" and not (
+            item.record.serving.unit is not None
+            and item.record.serving.unit.casefold() in {"each", "count"}
+            and item.record.serving.quantity is not None
+            and item.record.serving.quantity * item.recommended_official_servings == Decimal("2")
+        ):
+            continue
         if _later_local_correction(plan, item, normalized, match.end()) or (
             _unaccounted_report_clause(
                 normalized, match.end(), own_tokens, other_tokens, before=match.start(),

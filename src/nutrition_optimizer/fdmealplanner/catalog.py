@@ -2368,6 +2368,63 @@ class OfficialNutritionCatalog:
         ).fetchone()
         return self._cached_occurrence_from_row(row) if row is not None else None
 
+    def ensure_personal_biscuit_occurrence(self, parent: FDMenuOccurrence) -> FDMenuOccurrence:
+        """Store Luke's approved estimate as a separate parent-linked snapshot.
+
+        The upstream FD occurrence and snapshot are never rewritten. The
+        derived row uses its own provider and is not a member of an FD refresh.
+        """
+
+        from ..personal_foods import DERIVED_BISCUIT_PROVIDER, derived_biscuit_definition
+
+        if self.get_occurrence_by_id(parent.occurrence_id) != parent:
+            raise NutritionCatalogValidationError("derived biscuit parent is not in this catalog")
+        record, source, signature = derived_biscuit_definition(parent)
+        observed_at = parent.last_observed_at
+        key = f"personal-biscuit-v1:{parent.occurrence_key}"
+        connection = self._require_connection()
+        try:
+            with connection:
+                snapshot = self._upsert_observation(CatalogObservation(
+                    record, signature, observed_at, source,
+                )).snapshot
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO fd_menu_occurrences
+                    (provider, occurrence_key, service_date, meal_period_id,
+                     meal_period_name, station_concept_id, station_name,
+                     source_kind, source_value, content_signature,
+                     nutrition_snapshot_id, menu_detail_id, menu_id,
+                     first_observed_at, last_observed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        DERIVED_BISCUIT_PROVIDER, key, parent.service_date.isoformat(),
+                        str(parent.meal_period_id), parent.meal_period_name,
+                        None if parent.station_concept_id is None else str(parent.station_concept_id),
+                        parent.station_name, source.kind, source.value, signature,
+                        snapshot.snapshot_id, parent.menu_detail_id,
+                        None if parent.menu_id is None else str(parent.menu_id),
+                        _timestamp_text(observed_at), _timestamp_text(observed_at),
+                    ),
+                )
+                row = connection.execute(
+                    """
+                    SELECT occurrence_id FROM fd_menu_occurrences
+                    WHERE provider = ? AND occurrence_key = ? AND nutrition_snapshot_id = ?
+                    """,
+                    (DERIVED_BISCUIT_PROVIDER, key, snapshot.snapshot_id),
+                ).fetchone()
+                if row is None:
+                    raise NutritionCatalogError("derived biscuit occurrence was not stored")
+                identifier = int(row["occurrence_id"])
+        except sqlite3.Error as exc:
+            raise NutritionCatalogError("unable to store personal biscuit estimate") from exc
+        derived = self.get_occurrence_by_id(identifier)
+        if derived is None or derived.nutrition_record != record:
+            raise NutritionCatalogError("derived biscuit snapshot is inconsistent")
+        return derived
+
     def _current_occurrence_state(
         self,
         start_date: date,

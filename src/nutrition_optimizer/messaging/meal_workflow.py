@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 import logging
 from pathlib import Path
+import re
 import sys
 from typing import Protocol
 
@@ -87,6 +88,29 @@ NO_ACTIVE_MEAL_PLAN_REPLY_TEXT = (
     "I don't have an active meal plan to log right now. "
     "Please ask for a new meal recommendation first."
 )
+
+
+def _shake_reply_intent(text: str) -> tuple[str | None, bool] | None:
+    """Recognize a small set of ordinary acknowledgments for a pending shake."""
+
+    normalized = " ".join(text.casefold().strip().rstrip(".!?").split())
+    explicit = re.fullmatch(
+        r"(?:i (?:had|drank|finished) (?:a |the |my )?)?(breakfast|dinner) shake(?: (done|skip))?",
+        normalized,
+    )
+    if explicit is not None:
+        return explicit.group(1) + "_shake", explicit.group(2) != "skip"
+    if normalized in {"done", "i had it", "i drank it", "i had a shake", "i had the shake",
+                      "i drank a shake", "i drank the shake", "i finished the shake"}:
+        return None, True
+    if normalized in {"skip", "skipped the shake", "i skipped the shake"}:
+        return None, False
+    return None
+
+
+def _shake_acknowledgment(slot: str, confirmed: bool) -> str:
+    meal = slot.removesuffix("_shake")
+    return f"{'Logged' if confirmed else 'Skipped'} your {meal} shake."
 AMBIGUOUS_ACTIVE_MEAL_PLAN_REPLY_TEXT = (
     "I have more than one active meal plan, so I can't tell which meal this reports. "
     "Please say which meal you are reporting."
@@ -587,16 +611,18 @@ class ConversationalMealReportMessageHandler:
                 raise MealWorkflowMessageError("shake event belongs to another chat")
             self._send_reply(
                 chat_guid,
-                "Shake logged." if replay["status"] == "confirmed" else "Shake skipped.",
+                _shake_acknowledgment(str(replay["shake_slot"]), replay["status"] == "confirmed"),
             )
             return True
-        words = user_text.strip().casefold().split()
-        if words not in (["done"], ["skip"], ["breakfast", "shake", "done"],
-                         ["dinner", "shake", "done"], ["breakfast", "shake", "skip"],
-                         ["dinner", "shake", "skip"]):
+        intent = _shake_reply_intent(user_text)
+        if intent is None:
             return False
-        explicit = words[0] + "_shake" if len(words) == 3 else None
-        if state.list_active_meal_report_drafts(chat_guid):
+        explicit, confirmed = intent
+        drafts = state.list_active_meal_report_drafts(chat_guid)
+        if drafts:
+            if len(drafts) == 1 and re.search(r"\bshake\b", user_text, re.IGNORECASE):
+                self._send_reply(chat_guid, drafts[0].last_prompt)
+                return True
             return False
         local_date = self.context_resolver.current_service_date()
         pending = state.pending_shakes(local_date, chat_guid)
@@ -607,11 +633,11 @@ class ConversationalMealReportMessageHandler:
         if slot is None:
             return False
         result = state.resolve_shake(
-            local_date, slot, chat_guid, source_event_id, confirmed=words[-1] == "done"
+            local_date, slot, chat_guid, source_event_id, confirmed=confirmed
         )
         self._send_reply(
             chat_guid,
-            "Shake logged." if result["status"] == "confirmed" else "Shake skipped.",
+            _shake_acknowledgment(slot, result["status"] == "confirmed"),
         )
         return True
 

@@ -42,6 +42,7 @@ from .meal_report import (
     ProposedUnplannedMealItem,
     ReconciledMealReport,
     SkippedMealItem,
+    _food_reference_tokens,
 )
 from .meal_report_rendering import (
     format_meal_report_confirmation,
@@ -344,11 +345,19 @@ class MealReportConversationOrchestrator:
                 )
 
         context = _model_context(persisted_plan.plan, draft)
-        semantic = self._reconciler.interpret_semantic(
-            persisted_plan.plan,
-            user_text,
-            conversation_context=context,
-        )
+        semantic = _deterministic_draft_answer(persisted_plan.plan, draft, user_text)
+        if semantic is None:
+            semantic = _deterministic_whole_plan_report(persisted_plan.plan, draft, user_text)
+        if semantic is None:
+            semantic = self._reconciler.interpret_semantic(
+                persisted_plan.plan,
+                user_text,
+                conversation_context=context,
+            )
+        if semantic is None:
+            semantic = _deterministic_completion_answer(draft, user_text)
+        elif semantic.intent == "unsupported_or_ambiguous":
+            semantic = _deterministic_completion_answer(draft, user_text) or semantic
         if semantic is None:
             return self._record_nonreport_interaction(
                 persisted_plan,
@@ -1116,7 +1125,13 @@ def format_meal_report_draft_prompt(
         for item in substantive:
             planned = plan.item_for_id(item.plan_item_id) if item.plan_item_id else None
             if planned is not None:
-                if item.quantity_text is not None:
+                if item.reason == "composite_component_unresolved":
+                    lines.append(
+                        f"- {planned.display_name} is only a combined menu item. I can't "
+                        "convert the biscuit-only amount to its nutrition. Was there a "
+                        "separate biscuit menu item, or should I leave it unlogged?"
+                    )
+                elif item.quantity_text is not None:
                     lines.append(
                         f"- I have “{item.quantity_text}” for {planned.display_name}, "
                         "but I still need an authoritative amount in its menu serving unit."
@@ -1157,6 +1172,84 @@ def _quantity_reference_item_id(draft: MealReportDraft | None) -> str | None:
     if len(ids) == 1 and None not in ids:
         return next(iter(ids))
     return None
+
+
+def _deterministic_draft_answer(
+    plan: MealPlan, draft: MealReportDraft | None, user_text: str,
+) -> MealReportSemanticResult | None:
+    """Resolve short answers only when durable draft context names one item."""
+
+    if draft is None:
+        return None
+    text = " ".join(user_text.casefold().strip().rstrip(".!?").split())
+    item_id = _quantity_reference_item_id(draft)
+    item = plan.item_for_id(item_id) if item_id is not None else None
+    if item is None:
+        return None
+    zero = re.fullmatch(
+        r"(?:0(?:\.0+)?(?:\s*(?:oz|ounces?|grams?|g|servings?))?"
+        r"(?:\s+of\s+([a-z ]+))?|none|none of it|i skipped it|skipped it|skip it)",
+        text,
+    )
+    if zero is not None:
+        named = zero.group(1)
+        if named is not None:
+            own = _food_reference_tokens(item.display_name) | _food_reference_tokens(item.record.name)
+            if not _food_reference_tokens(named) & own:
+                return None
+        action, relation = "skipped", None
+    elif text in {"the recommended amount", "recommended amount", "all of it",
+                  "everything you recommended", "what you recommended"}:
+        action, relation = "eaten", "as_recommended"
+    else:
+        return None
+    complete = not any(q.reason == "completion_required" for q in draft.clarifications)
+    return MealReportSemanticResult.model_validate({
+        "intent": "clarification_answer", "report_scope": "complete" if complete else "partial",
+        "planned_items": [{
+            "plan_item_id": item_id, "reference_text": user_text, "action": action,
+            "quantity_relation": relation, "quantity_text": None,
+            "comparison_plan_item_id": None, "is_correction": False,
+        }],
+        "additional_foods": [], "unresolved_statements": [],
+    })
+
+
+def _deterministic_whole_plan_report(
+    plan: MealPlan, draft: MealReportDraft | None, user_text: str,
+) -> MealReportSemanticResult | None:
+    """A complete literal 'all of it' refers to the selected active plan."""
+
+    if draft is not None:
+        return None
+    text = " ".join(user_text.casefold().strip().rstrip(".!?").split())
+    if re.fullmatch(
+        r"(?:i (?:had|ate|consumed) )?"
+        r"(?:all of it|the recommended amount|everything you recommended)", text,
+    ) is None:
+        return None
+    return MealReportSemanticResult.model_validate({
+        "intent": "meal_report", "report_scope": "complete",
+        "planned_items": [{
+            "plan_item_id": plan.item_id(item), "reference_text": user_text,
+            "action": "eaten", "quantity_relation": "as_recommended",
+            "quantity_text": None, "comparison_plan_item_id": None, "is_correction": False,
+        } for item in plan.items],
+        "additional_foods": [], "unresolved_statements": [],
+    })
+
+
+def _deterministic_completion_answer(
+    draft: MealReportDraft | None, user_text: str,
+) -> MealReportSemanticResult | None:
+    if draft is None or " ".join(user_text.casefold().strip().rstrip(".!?").split()) not in {
+        "that's all", "that is all", "nothing else",
+    }:
+        return None
+    return MealReportSemanticResult.model_validate({
+        "intent": "clarification_answer", "report_scope": "complete",
+        "planned_items": [], "additional_foods": [], "unresolved_statements": [],
+    })
 
 
 def _model_context(plan: MealPlan, draft: MealReportDraft | None) -> Mapping[str, object]:
@@ -1303,6 +1396,7 @@ def _merge_draft_facts(
                 "planned_fraction_unresolved",
                 "plan_attestation_required",
                 "draft_quantity_reference_unresolved",
+                "composite_component_unresolved",
             }
         ):
             conflicts.append(DraftClarification(
@@ -1325,7 +1419,10 @@ def _merge_draft_facts(
                     quantity_text=stated.quantity_text,
                 )
             )
-        elif candidate.quantity_status == "resolved" and merged.quantity_status == "resolved":
+        elif (
+            (candidate.quantity_status == "resolved" and merged.quantity_status == "resolved")
+            or (candidate.action == "skipped" and merged.action == "skipped")
+        ):
             settled_plan_ids.add(item_id)
 
     unplanned = [] if draft is None else list(draft.unplanned_items)
@@ -1418,6 +1515,7 @@ def _merge_draft_facts(
                 "planned_fraction_unresolved",
                 "plan_attestation_required",
                 "draft_quantity_reference_unresolved",
+                "composite_component_unresolved",
             }
             and clarification.plan_item_id not in settled_plan_ids
             and not any(
@@ -1466,7 +1564,13 @@ def _merge_draft_facts(
     questions.extend(
         _draft_clarification_from_report(plan, item)
         for item in report.clarification_items
-        if item.plan_item is None and item.food_text is None
+        if (
+            (item.plan_item is None and item.food_text is None)
+            or (
+                item.plan_item is not None
+                and plan.item_id(item.plan_item) not in {stated.plan_item_id for stated in semantic.planned_items}
+            )
+        )
     )
     if semantic.report_scope != "complete":
         questions.append(DraftClarification("completion_required"))
@@ -1626,7 +1730,13 @@ def _draft_clarification_from_report(
     item: ClarificationItem,
 ) -> DraftClarification:
     if item.plan_item is not None:
-        return DraftClarification(item.reason, plan.item_id(item.plan_item))
+        return DraftClarification(
+            item.reason, plan.item_id(item.plan_item),
+            quantity_text=(
+                item.original_user_phrase
+                if item.reason == "composite_component_unresolved" else None
+            ),
+        )
     return DraftClarification(item.reason, food_text=item.food_text)
 
 

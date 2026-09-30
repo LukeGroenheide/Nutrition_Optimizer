@@ -116,6 +116,28 @@ class ShakeIntakeV14Tests(unittest.TestCase):
         self.assertEqual([text for _, text in self.sender.calls].count("Drink a shake"), 1)
         self._complete(3, "Rice")
         self.assertEqual([text for _, text in self.sender.calls].count("Drink a shake"), 2)
+
+    def test_natural_confirmation_without_active_meal_logs_actual_only(self) -> None:
+        self._complete(1, "Eggs")
+        self.assertIsNone(self.state.load_active_meal_plan(DAY, 1))
+        meal_only = self.state.load_recommendation_ledger(DAY).total_consumed_nutrients
+        self.assertTrue(self.handler.handle(self._message("natural-shake", "I had a shake")))
+        self.assertEqual(self.sender.calls[-1][1], "Logged your breakfast shake.")
+        self.assertEqual(self.state.load_shake(DAY, "breakfast_shake")["status"], "confirmed")
+        actual = self.state.load_actual_daily_nutrients(DAY)
+        self.assertEqual(actual.calories_kcal - meal_only.calories_kcal, Decimal("580"))
+        self.assertEqual(self.state.load_recommendation_ledger(DAY).total_consumed_nutrients,
+                         meal_only)
+        self.handler.handle(self._message("natural-shake", "I had a shake"))
+        self.assertEqual(self.state.load_actual_daily_nutrients(DAY), actual)
+
+    def test_natural_shake_reply_asks_when_two_are_pending(self) -> None:
+        self._complete(1, "Eggs")
+        self._complete(3, "Rice")
+        self.handler.handle(self._message("ambiguous-natural-shake", "I drank the shake"))
+        self.assertEqual(self.sender.calls[-1][1], "Which shake: breakfast or dinner?")
+        self.assertEqual(self.state.pending_shakes(DAY, CHAT),
+                         ("breakfast_shake", "dinner_shake"))
         self.assertIsNotNone(self.state.load_shake(DAY, "dinner_shake")["reminder_delivered_at"])
         self.assertFalse(self.state.claim_shake_reminder(
             self.state.load_meal_plan_for_source_event("meal-2026-09-28-1-None").plan_id, CHAT
@@ -238,6 +260,25 @@ class ShakeIntakeV14Tests(unittest.TestCase):
                 self.handler.handle(self._message("bare-done", "done"))
         self.assertEqual(self.state.load_shake(DAY, "breakfast_shake")["status"], "pending")
 
+    def test_unresolved_meal_draft_keeps_natural_shake_reply(self) -> None:
+        self._complete(1, "Eggs")
+        saved = self.state.save_meal_plan(
+            MealPlan(DAY, 2, (self._meal_item(2, "Chicken"),)), meal_slot="lunch"
+        )
+        self.state.save_meal_report_draft(
+            chat_guid=CHAT, persisted_plan=saved, current_draft=None,
+            planned_items=(), unplanned_items=(),
+            clarifications=(DraftClarification("completion_required"),),
+            last_prompt="Anything else?", source_event_id="draft-natural-shake",
+            intent="meal_report", processed_at=NOW,
+        )
+        with patch.object(self.handler.conversation_orchestrator, "process") as process:
+            self.assertTrue(self.handler.handle(self._message("natural-with-draft", "I had a shake")))
+            process.assert_not_called()
+        self.assertEqual(self.sender.calls[-1][1], "Anything else?")
+        self.assertEqual(self.state.load_shake(DAY, "breakfast_shake")["status"], "pending")
+        self.assertEqual(self.state.list_active_meal_report_drafts(CHAT)[0].unplanned_items, ())
+
     def test_unresolved_meal_draft_keeps_explicit_shake_reply(self) -> None:
         self._complete(1, "Eggs")
         saved = self.state.save_meal_plan(
@@ -250,9 +291,10 @@ class ShakeIntakeV14Tests(unittest.TestCase):
             last_prompt="Anything else?", source_event_id="draft-open-explicit",
             intent="meal_report", processed_at=NOW,
         )
-        with patch.object(self.handler.conversation_orchestrator, "process", side_effect=RuntimeError("meal owns reply")):
-            with self.assertRaises(MealWorkflowMessageError):
-                self.handler.handle(self._message("explicit-done", "breakfast shake done"))
+        with patch.object(self.handler.conversation_orchestrator, "process") as process:
+            self.assertTrue(self.handler.handle(self._message("explicit-done", "breakfast shake done")))
+            process.assert_not_called()
+        self.assertEqual(self.sender.calls[-1][1], "Anything else?")
         self.assertEqual(self.state.load_shake(DAY, "breakfast_shake")["status"], "pending")
 
     def _meal_item(self, meal: int, name: str) -> PlannedMealItem:

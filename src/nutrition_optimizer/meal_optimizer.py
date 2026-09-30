@@ -33,6 +33,7 @@ from .physical_quantity import (
     physical_quantity_for,
     serving_multipliers_for_physical_counts,
 )
+from .personal_foods import is_biscuit_parent, is_personally_excluded
 
 __all__ = [
     "LocalMealOptimizer",
@@ -196,7 +197,7 @@ class MealOptimizationPolicy:
 
 @dataclass(frozen=True, slots=True)
 class RecommendedMealItem:
-    """One exact current FD occurrence selected at an official quantity."""
+    """One catalog-linked current food selected at its source serving quantity."""
 
     occurrence: FDMenuOccurrence
     record: NutritionRecord
@@ -328,7 +329,10 @@ class LocalMealOptimizer:
         excluded_source_identities: Iterable[tuple[str, str]] = (),
         required_foods: Iterable[RequestedMealFood] = (),
     ) -> MealRecommendation:
-        """Read only the current local FD meal menu and optimize against intake.
+        """Optimize the current menu with Luke's narrow personal food policy.
+
+        An approved biscuit estimate is stored as a separate catalog snapshot
+        when its FD parent is available; upstream FD records stay immutable.
 
         ``excluded_source_identities`` is a narrow authoritative exclusion
         seam used by a one-time replacement operation.  It deliberately takes
@@ -340,7 +344,20 @@ class LocalMealOptimizer:
         quantity.  It is deliberately not a user preference profile.
         """
 
-        occurrences = self._catalog.list_current_meal_occurrences(service_date, meal=meal)
+        official = self._catalog.list_current_meal_occurrences(service_date, meal=meal)
+        personal_biscuit = getattr(self._catalog, "ensure_personal_biscuit_occurrence", None)
+        occurrences_list: list[FDMenuOccurrence] = []
+        biscuit_added = False
+        for occurrence in official:
+            if is_personally_excluded(occurrence.nutrition_record):
+                continue
+            if is_biscuit_parent(occurrence):
+                if not biscuit_added and callable(personal_biscuit):
+                    occurrences_list.append(personal_biscuit(occurrence))
+                    biscuit_added = True
+                continue
+            occurrences_list.append(occurrence)
+        occurrences = tuple(occurrences_list)
         excluded = _normalize_excluded_source_identities(excluded_source_identities)
         required = _normalize_required_foods(required_foods)
         if {food.source_identity for food in required} & excluded:

@@ -125,7 +125,7 @@ class NutritionProvenance:
 
 @dataclass(frozen=True, slots=True)
 class NutritionRecord:
-    """Official nutrition information expressed per one official serving."""
+    """Source nutrition per serving; provenance distinguishes official and derived."""
 
     name: str
     serving: Serving

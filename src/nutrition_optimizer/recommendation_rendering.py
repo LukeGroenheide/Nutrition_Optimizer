@@ -792,21 +792,56 @@ _PRACTICAL_DESCRIPTOR_MAX_NUMBER = 8
 
 
 def _descriptive_visual_for(request: RecommendedPortionRenderRequest) -> str | None:
-    """Give ounce-based eggs a rough visual cue with no reversible calibration."""
+    """Give familiar weight-based foods a rough, non-reversible serving cue."""
 
     quantity = request.physical_quantity
     food_name = " ".join(request.official_food_display_name.casefold().split())
-    if food_name not in {"eggs", "scrambled eggs"}:
-        return None
     if not quantity.is_weight or quantity.unit.casefold().strip() not in {
         "ounce", "ounces", "ounce cooked weight", "ounces cooked weight",
     }:
         return None
-    if not Decimal("3") <= quantity.amount <= Decimal("16"):
+    if not Decimal("2") <= quantity.amount <= Decimal("16"):
         return None
-    portions = int((quantity.amount / Decimal("4")).to_integral_value(rounding=ROUND_HALF_UP))
+    plain_pasta = _is_plain_scoop_pasta(food_name)
+    if _is_composite_food_component(food_name) and not plain_pasta:
+        return None
+    words = set(re.findall(r"[a-z]+", food_name))
+    if not plain_pasta and words & {"soup", "stew", "chowder", "bisque", "mashed", "puree", "pureed",
+                                  "salad", "noodles", "fries", "sauce", "gravy"}:
+        return None
+    if plain_pasta:
+        unit, ounces = "scoop-sized", Decimal("4")
+    elif words & {"egg", "eggs", "scramble", "scrambled"}:
+        unit, ounces = "baseball-sized", Decimal("4")
+    elif words & {"rice", "quinoa", "couscous"}:
+        unit, ounces = "scoop-sized", Decimal("4")
+    elif (
+        words & {"potato", "potatoes", "vegetable", "vegetables", "broccoli",
+                 "carrots", "cauliflower", "zucchini", "mushrooms", "squash",
+                 "sprouts", "hashbrowns"}
+        or {"green", "beans"} <= words
+    ):
+        unit, ounces = "fist-sized", Decimal("4")
+    else:
+        return None
+    portions = int((quantity.amount / ounces).to_integral_value(rounding=ROUND_HALF_UP))
     noun = "portion" if portions == 1 else "portions"
-    return f"about {portions} baseball-sized {noun}"
+    return f"about {portions} {unit} {noun}"
+
+
+def _is_plain_scoop_pasta(food_name: str) -> bool:
+    """Recognize plain pasta names while leaving mixed dishes in source units."""
+
+    if food_name in {"mac and cheese", "macaroni and cheese"}:
+        return True
+    if _is_composite_food_component(food_name):
+        return False
+    words = set(re.findall(r"[a-z]+", food_name))
+    pasta_words = {"pasta", "spaghetti", "noodles", "cavatappi", "penne", "macaroni",
+                   "ramen", "fettuccine", "linguine", "rigatoni", "rotini", "farfalle"}
+    plain_modifiers = {"corn", "dashi", "soba", "rice", "wheat", "whole", "grain",
+                       "gluten", "free", "egg"}
+    return bool(words & pasta_words) and words <= pasta_words | plain_modifiers
 
 
 def _deterministic_render(

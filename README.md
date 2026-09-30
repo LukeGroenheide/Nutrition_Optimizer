@@ -8,6 +8,8 @@ Nutrition_Optimizer is a personal dining recommendation and meal-reporting syste
 - Schedules breakfast, lunch, dinner, or Sunday brunch recommendations when the dining calendar and current menu allow them.
 - Sends recommendations and receives conversational meal reports through an optional BlueBubbles messaging integration.
 - Shows human-friendly visual portions while retaining exact official-serving quantities for calculation and persistence.
+- Supports plan-relative reports such as “I ate everything you recommended,” with clarification for uncertain exceptions.
+- Applies a narrow personal food policy to recommendation candidates, including explicit exclusions and a separately marked derived estimate.
 - Tracks confirmed meals and shakes in actual daily nutrient totals.
 
 ## Why I built it
@@ -37,6 +39,7 @@ For an incoming report, Nutrition_Optimizer prepares a bounded task, meal contex
 
 - **Fail-closed interpretation:** unsupported or ambiguous meal reports trigger clarification instead of silently creating intake.
 - **Exact quantity versus presentation:** nutrition calculations use authoritative serving quantities, while visual portion descriptions help users judge portions and remain presentation-only unless they have a validated reversible mapping to those quantities.
+- **Source-aware personal estimates:** an approved per-item estimate can be stored as a separate, parent-linked snapshot without changing the official menu record.
 - **Independent meal contexts:** plans and report drafts are scoped to a specific date, meal, and chat so one meal's report cannot accidentally modify another.
 - **Separate shake accounting:** confirmed shakes count toward actual daily nutrition totals, but are excluded from meal recommendation calculations so drinking a shake does not shrink later meals and skipping one does not enlarge them.
 - **Durable delivery and reporting:** persisted plans, dispatch records, source message IDs, and report applications help prevent duplicate intake and preserve report state across retries.
@@ -68,7 +71,7 @@ python3 -m venv .venv
 
 The database command creates `data/state/nutrition.sqlite3` and applies the current schema (v14); it does not download menus. The database and downloaded menus are local runtime data ignored by Git. To inspect the public menu refresh command without writing state, run `.venv/bin/python -m nutrition_optimizer.fdmealplanner.menu_cache --help`. A real refresh uses `refresh-menu-cache` and makes requests to FDMealPlanner; it requires the upstream service to be available.
 
-The tests use local fixtures and mocks rather than a live dining or messaging service. Coverage includes migrations, recommendation logic, meal and report lifecycle, semantic authority boundaries, portion presentation, shake intake, and persistence. In a fresh isolated environment for this release: **736 tests ran, 1 skipped, 0 failures**. The skipped test needs a populated local Phelps catalog; it is optional and never modifies that original database.
+The tests use local fixtures and mocks rather than a live dining or messaging service. Coverage includes migrations, recommendation logic, meal and report lifecycle, semantic authority boundaries, portion presentation, shake intake, and persistence. In this public tree: **762 tests ran, 1 skipped, 0 failures**. The skipped test needs a populated local Phelps catalog; it is optional and never modifies that original database.
 
 ## Optional messaging deployment
 

@@ -50,6 +50,7 @@ from nutrition_optimizer.portion_interpretation import (
     NaturalPortionInterpreter,
     PortionInterpretationRequest,
     PortionSemanticDecision,
+    UnresolvedPortion,
 )
 from tests.test_food_resolution import DAY1, T1, component, mapped, menu_day
 
@@ -227,13 +228,55 @@ class RecommendationPortionRenderingTests(unittest.TestCase):
         self.assertEqual(rendered.natural_quantity_text, "2 eggs")
         self.assertEqual(rendered.semantic_descriptor_disposition, "not_requested")
 
-    def test_unmapped_weight_keeps_existing_canonical_fallback(self) -> None:
-        request = recommendation_rendering.RecommendedPortionRenderRequest(
-            "Corn Spaghetti", Serving(Decimal("4"), "Ounce", "4 Ounce"), Decimal("2")
-        )
-        rendered = recommendation_rendering.RecommendedPortionRenderer().render(request)
-        self.assertEqual(rendered.natural_quantity_text, "about 8 oz of corn spaghetti")
-        self.assertEqual(rendered.semantic_descriptor_disposition, "not_requested")
+    def test_plain_pasta_visual_keeps_weight_and_cannot_reverse_authorize(self) -> None:
+        food = record("Corn Spaghetti", quantity="4", unit="Ounce")
+        occurrence_value = occurrence(91, food)
+        renderer = recommendation_rendering.RecommendedPortionRenderer()
+        for multiplier, expected in ((Decimal("1"), "about 1 scoop-sized portion"),
+                                     (Decimal("2"), "about 2 scoop-sized portions")):
+            with self.subTest(multiplier=multiplier):
+                item = RecommendedMealItem(occurrence_value, food, multiplier)
+                rendered = recommendation_rendering.render_meal_recommendation(
+                    recommendation(item), renderer,
+                )
+                plan_item = rendered.meal_plan.items[0]
+                self.assertEqual(plan_item.natural_quantity_text, expected)
+                self.assertEqual(rendered.message, f"For dinner, get:\n- {expected} of corn spaghetti")
+                self.assertEqual(rendered.renderings[0].canonical_quantity_text,
+                                 f"about {4 * multiplier} oz of corn spaghetti")
+                self.assertEqual(rendered.renderings[0].physical_quantity.amount, 4 * multiplier)
+                self.assertEqual(plan_item.recommended_official_servings, multiplier)
+                self.assertEqual(plan_item.presentation_binding.kind, PresentationKind.DESCRIPTIVE_ONLY)
+                self.assertIsNone(plan_item.presentation_binding.calibration)
+                self.assertIsInstance(NaturalPortionInterpreter().interpret(PortionInterpretationRequest(
+                    resolved_food_for_occurrence(occurrence_value), "1 scoop of spaghetti",
+                    plan_item.presentation_binding, multiplier,
+                )), UnresolvedPortion)
+
+    def test_mac_and_cheese_uses_scoop_visual(self) -> None:
+        for multiplier, expected in ((Decimal("1"), "about 1 scoop-sized portion"),
+                                     (Decimal("2"), "about 2 scoop-sized portions")):
+            with self.subTest(multiplier=multiplier):
+                request = recommendation_rendering.RecommendedPortionRenderRequest(
+                    "Mac and Cheese", Serving(Decimal("4"), "Ounce", "4 Ounce"), multiplier
+                )
+                rendered = recommendation_rendering.RecommendedPortionRenderer().render(request)
+                self.assertEqual(rendered.natural_quantity_text, expected)
+                self.assertEqual(rendered.canonical_quantity_text,
+                                 f"about {4 * multiplier} oz total of mac and cheese")
+                self.assertEqual(rendered.semantic_descriptor_disposition, "deterministic_visual")
+
+    def test_mixed_pasta_keeps_existing_canonical_fallback(self) -> None:
+        for name in ("Chicken Florentine Pasta Bake", "Cajun Chicken Pasta",
+                     "Corn Penne in Cheese Sauce", "Cheese Ravioli", "Lasagna",
+                     "Chicken Noodle Soup"):
+            with self.subTest(name=name):
+                request = recommendation_rendering.RecommendedPortionRenderRequest(
+                    name, Serving(Decimal("4"), "Ounce", "4 Ounce"), Decimal("2")
+                )
+                rendered = recommendation_rendering.RecommendedPortionRenderer().render(request)
+                self.assertEqual(rendered.natural_quantity_text, f"about 8 oz of {name.casefold()}")
+                self.assertEqual(rendered.semantic_descriptor_disposition, "not_requested")
 
     def test_two_physical_tenders_use_the_exact_derived_multiplier(self) -> None:
         food = record("Chicken Tenders", quantity="3", unit="Each")
@@ -442,7 +485,7 @@ class RecommendationPortionRenderingTests(unittest.TestCase):
 
     def test_useless_practical_descriptor_forms_fall_back_without_guessing_a_conversion(self) -> None:
         request = recommendation_rendering.RecommendedPortionRenderRequest(
-            "Corn Spaghetti",
+            "Roasted Chicken",
             Serving(Decimal("4"), "Ounce", "4 Ounce"),
             Decimal("2"),
             approved_descriptive_options=("about 2 scoops",),
@@ -457,12 +500,12 @@ class RecommendationPortionRenderingTests(unittest.TestCase):
                 rendering = recommendation_rendering.RecommendedPortionRenderer(
                     FakeSemanticRenderer(semantic_result(descriptor))
                 ).render(request)
-                self.assertEqual(rendering.natural_quantity_text, "about 8 oz of corn spaghetti")
+                self.assertEqual(rendering.natural_quantity_text, "about 8 oz of roasted chicken")
                 self.assertEqual(rendering.semantic_descriptor_disposition, "rejected")
 
     def test_semantic_descriptor_must_match_approved_option_exactly(self) -> None:
         request = recommendation_rendering.RecommendedPortionRenderRequest(
-            "Corn Spaghetti",
+            "Roasted Chicken",
             Serving(Decimal("4"), "Ounce", "4 Ounce"),
             Decimal("2"),
             approved_descriptive_options=("about 2 scoops",),
@@ -473,7 +516,7 @@ class RecommendationPortionRenderingTests(unittest.TestCase):
                     FakeSemanticRenderer(semantic_result(altered))
                 ).render(request)
                 self.assertEqual(rendering.semantic_descriptor_disposition, "rejected")
-                self.assertEqual(rendering.natural_quantity_text, "about 8 oz of corn spaghetti")
+                self.assertEqual(rendering.natural_quantity_text, "about 8 oz of roasted chicken")
 
     def test_malformed_semantic_output_and_transport_failure_fall_back_to_canonical_text(self) -> None:
         weight_request = recommendation_rendering.RecommendedPortionRenderRequest(

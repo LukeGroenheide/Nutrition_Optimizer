@@ -183,8 +183,8 @@ class MealQuantityAuthorityTests(unittest.TestCase):
         result = self.reconcile(text, [eaten(f'item_{i}', text) for i in (1, 2, 3)])
         self.assertEqual([r.official_servings for r in result.eaten_items], [Decimal('1.75'), Decimal('1'), Decimal('2')])
 
-    def test_ambiguous_all_fails_closed(self):
-        result = self.reconcile('I ate all of it', [eaten('item_1', 'all of it')])
+    def test_unqualified_some_fails_closed(self):
+        result = self.reconcile('I ate some of it', [eaten('item_1', 'some of it')])
         self.assertEqual(result.eaten_items, ())
         self.assertTrue(result.clarification_items)
 
